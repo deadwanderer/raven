@@ -130,7 +130,6 @@ State :: struct #align(64) {
     shutdown_requested:         bool,
     submitted_layers:           bool,
 
-    debug_trace_ctx:            (debug_trace.Context when DEBUG_TRACE_ENABLED else struct {}),
     context_state:              Context_State,
 
     input:                      Input,
@@ -510,10 +509,6 @@ get_context :: proc "contextless" () -> (result: runtime.Context) {
 
 init_context_state :: proc(ctx: ^Context_State, allocator: runtime.Allocator) {
     mem.tracking_allocator_init(&_state.context_state.tracking, allocator, allocator)
-
-    when DEBUG_TRACE_ENABLED {
-        debug_trace.init(&_state.debug_trace_ctx)
-    }
 }
 
 // Create state, init context, init subsystems.
@@ -2300,23 +2295,33 @@ _assertion_failure_proc :: proc(prefix, message: string, loc: runtime.Source_Cod
     runtime.print_byte('\n')
 
     when DEBUG_TRACE_ENABLED {
-        ctx := &_state.debug_trace_ctx
-        if _state != nil && !debug_trace.in_resolve(ctx) {
-            buf: [64]debug_trace.Frame
+        if _state != nil {
             runtime.print_string("Debug Stack Trace:\n")
 
-            frames := debug_trace.frames(ctx, skip = 1, frames_buffer = buf[:])
-            for f, i in frames {
-                fl := debug_trace.resolve(ctx, f, context.temp_allocator)
-                if fl.loc.file_path == "" && fl.loc.line == 0 {
-                    continue
+            cap := debug_trace.capture(skip = 1)
+            locs, err := debug_trace.resolve(cap, context.temp_allocator, context.temp_allocator)
+
+            if err != .None {
+                runtime.print_string("Error resolving stack trace:")
+                switch err {
+                case .None: runtime.print_string("None")
+                case .Allocator_Error: runtime.print_string("Allocator_Error")
+                case .Parse_Address_Failed: runtime.print_string("Parse_Address_Failed")
+                case .Resolve_Aborted: runtime.print_string("Resolve_Aborted")
                 }
-                runtime.print_int(i)
-                runtime.print_string(" : ")
-                runtime.print_caller_location(fl.loc)
-                runtime.print_string(" ")
-                runtime.print_string(fl.loc.procedure)
-                runtime.print_byte('\n')
+                runtime.print_string("\n")
+            } else {
+                for l, i in locs {
+                    if l.file_path == "" && l.line == 0 {
+                        continue
+                    }
+                    runtime.print_int(i)
+                    runtime.print_string(" : ")
+                    runtime.print_caller_location(l)
+                    runtime.print_string(" ")
+                    runtime.print_string(l.procedure)
+                    runtime.print_byte('\n')
+                }
             }
         }
     } else {
